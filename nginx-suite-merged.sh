@@ -67,13 +67,14 @@ parse_args(){
       --no-nezha) SU_ENABLE_NEZHA="no" ;;
       --help)
         cat << USAGE
-用法: $0 [--action=install|site|nezha]
+用法: $0 [--action=install|site|nezha|cleanup]
            [--hostname=域名]
            [--backend=URL | --backend-ip=IP --backend-port=PORT]
            [--cf|--no-cf] [--cf-email=EMAIL] [--cf-api=KEY]
            [--cf-zone=ZONE] [--cf-zone-exists=yes|no]
            [--cdn-realip|--no-cdn-realip]
            [--nezha|--no-nezha]
+cleanup 模式仅需 --hostname，自动删除旧站点配置/证书。
 环境变量同名（前缀SU_）亦可，例如: SU_ACTION, SU_HOSTNAME ...
 USAGE
         exit 0 ;;
@@ -87,6 +88,13 @@ run_noninteractive_if_requested(){
   case "$ACTION" in
     install)
       action_install_nginx
+      exit 0
+      ;;
+    cleanup)
+      local hostname
+      hostname="${SU_HOSTNAME}"
+      if [ -z "$hostname" ]; then log_error "--hostname 必填"; exit 1; fi
+      cleanup_site "$hostname" "yes"
       exit 0
       ;;
     site|nezha)
@@ -704,6 +712,68 @@ provision_site(){
   log_success "站点已配置完成：$hostname -> $backend_url"
 }
 
+cleanup_site(){
+  local hostname="$1" assume_yes="${2:-no}"
+  if [ -z "$hostname" ]; then log_error "域名不能为空"; return 1; fi
+  check_nginx
+  if [ "$assume_yes" != "yes" ]; then
+    if ! ask "确认要删除旧域名 ${hostname} 的 nginx 配置与证书？" "n"; then
+      log_warn "已取消清理 $hostname"
+      return 0
+    fi
+  fi
+
+  local removed_any="no" config_changed="no"
+  if [ -e "/etc/nginx/sites-enabled/${hostname}" ]; then
+    rm -f "/etc/nginx/sites-enabled/${hostname}"
+    log_info "已移除 /etc/nginx/sites-enabled/${hostname}"
+    removed_any="yes"
+    config_changed="yes"
+  fi
+  if [ -f "/etc/nginx/sites-available/${hostname}" ]; then
+    rm -f "/etc/nginx/sites-available/${hostname}"
+    log_info "已删除 /etc/nginx/sites-available/${hostname}"
+    removed_any="yes"
+    config_changed="yes"
+  fi
+
+  local ssl_dir="/etc/nginx/ssl/${hostname}"
+  if [ -d "$ssl_dir" ]; then
+    rm -rf "$ssl_dir"
+    log_info "已删除证书目录 $ssl_dir"
+    removed_any="yes"
+  fi
+
+  local acme_removed="no"
+  if [ -x /root/.acme.sh/acme.sh ]; then
+    if [ -d "/root/.acme.sh/${hostname}" ] || [ -d "/root/.acme.sh/${hostname}_ecc" ]; then
+      if /root/.acme.sh/acme.sh --remove -d "$hostname" >>"$LOG_FILE" 2>&1; then
+        log_info "acme.sh 自动续签任务已删除"
+        acme_removed="yes"
+        removed_any="yes"
+      else
+        log_warn "删除 acme.sh 条目失败，请手动检查 /root/.acme.sh/${hostname}"
+      fi
+    fi
+  fi
+
+  if [ "$config_changed" = "yes" ]; then
+    if nginx -t; then
+      systemctl reload nginx
+      log_success "nginx 配置已重新加载"
+    else
+      log_error "nginx 配置测试失败，请手动检查后再 reload"
+      return 1
+    fi
+  fi
+
+  if [ "$removed_any" = "yes" ] || [ "$acme_removed" = "yes" ]; then
+    log_success "已清理旧域名 $hostname 的相关文件"
+  else
+    log_warn "未找到与 $hostname 相关的配置或证书，可能已提前删除"
+  fi
+}
+
 # -----------------------------
 # 菜单操作
 # -----------------------------
@@ -757,6 +827,14 @@ action_nezha_reverse_proxy(){
   provision_site "$hostname" "$backend_url" "$use_cf" "$cf_email" "$cf_api" "$cf_zone" "$cf_zone_exists" "$enable_cdn_realip" "yes"
 }
 
+action_cleanup_site(){
+  ensure_base_installed
+  local hostname
+  read -p "请输入需要清理的旧域名(必填): " hostname
+  [ -z "$hostname" ] && { log_error "域名不能为空"; return 1; }
+  cleanup_site "$hostname"
+}
+
 self_update(){
   local url="https://raw.githubusercontent.com/xwell/nginx-tools/main/nginx-suite.sh"
   log_info "从 $url 获取最新脚本..."
@@ -771,31 +849,56 @@ self_update(){
 }
 
 main_menu(){
+
   clear
+
   echo "nginx安装与管理脚本"
+
   echo "--- https://github.com/xwell/nginx-tools ---"
+
   echo "1.  仅安装nginx"
+
   echo "2.  站点反向代理-IP+端口"
+
   echo "3.  哪吒面板反向代理"
-  echo "————————————————-"
-  echo "4.  更新脚本"
-  echo "————————————————-"
+
+  echo "-------------------------"
+
+  echo "4.  清理旧域名配置"
+
+  echo "5.  更新脚本"
+
+  echo "-------------------------"
+
   echo "0.  退出脚本"
+
   echo
-  read -p "请输入选择 [0-4]: " sel
+
+  read -p "请输入选择 [0-5]: " sel
+
   case "$sel" in
+
     1) require_root; action_install_nginx; read -p "按回车返回菜单..." _ ;;
+
     2) require_root; action_site_reverse_proxy; read -p "按回车返回菜单..." _ ;;
+
     3) require_root; action_nezha_reverse_proxy; read -p "按回车返回菜单..." _ ;;
-    4) require_root; self_update; read -p "按回车返回菜单..." _ ;;
+
+    4) require_root; action_cleanup_site; read -p "按回车返回菜单..." _ ;;
+
+    5) require_root; self_update; read -p "按回车返回菜单..." _ ;;
+
     0) exit 0 ;;
+
     *) echo "无效选择"; sleep 1 ;;
+
   esac
+
 }
+
+
 
 require_root
 parse_args "$@"
 run_noninteractive_if_requested
 while true; do main_menu; done
-
-

@@ -97,8 +97,15 @@ sudo ./nginx-suite-merged.sh \
   --cdn-realip
 ```
 
+- 清理旧域名配置（删除 server 块、证书与 acme.sh 自动续签）
+```bash
+sudo ./nginx-suite-merged.sh \
+  --action=cleanup \
+  --hostname=old.example.com
+```
+
 支持参数：
-- `--action`: install | site | nezha
+- `--action`: install | site | nezha | cleanup
 - `--hostname`: 站点域名
 - `--backend`: 后端完整 URL（与 `--backend-ip/--backend-port` 二选一）
 - `--backend-ip` 与 `--backend-port`: 后端地址与端口
@@ -113,6 +120,19 @@ sudo ./nginx-suite-merged.sh \
 - `SU_ACTION, SU_HOSTNAME, SU_BACKEND, SU_BACKEND_IP, SU_BACKEND_PORT`
 - `SU_USE_CF, SU_CF_EMAIL, SU_CF_API, SU_CF_ZONE, SU_CF_ZONE_EXISTS`
 - `SU_ENABLE_CDN_REALIP, SU_ENABLE_NEZHA`
+
+### 清理旧域名
+
+- **交互式**：运行 `sudo ./nginx-suite-merged.sh`，在主菜单选择 `4. 清理旧域名配置`，按提示输入需要移除的旧域名。
+- **无交互**：执行 `sudo ./nginx-suite-merged.sh --action=cleanup --hostname=old.example.com`（也可通过 `SU_ACTION=cleanup`、`SU_HOSTNAME` 环境变量传参）。
+
+脚本会自动完成以下操作：
+1. 删除 `/etc/nginx/sites-enabled/<域名>` 与 `sites-available` 中对应的 server 配置。
+2. 清理 `/etc/nginx/ssl/<域名>/` 目录下的证书文件。
+3. 调用 `acme.sh --remove -d <域名>`，移除自动续签计划，避免以后续 renewal 报错。
+4. 若 Nginx 配置发生变更，自动执行 `nginx -t && systemctl reload nginx`，确保配置立即生效。
+
+如仍需保留 Cloudflare 或其他 DNS 解析，请手动在提供商面板中更新；脚本不会修改 DNS 记录。
 
 ## 使用说明：letsencrypt-standalone-enhanced.sh
 
