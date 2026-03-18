@@ -340,7 +340,7 @@ EOF
 }
 
 configure_default_site(){
-  log_info "配置默认站点..."; rm -rf /etc/nginx/sites-enabled/default
+  log_info "配置默认站点..."; mkdir -p /etc/nginx/sites-enabled /etc/nginx/sites-available; rm -f /etc/nginx/sites-enabled/default
   if [ "${SUPPORT_HTTP3}" = "yes" ]; then LISTEN_QUIC_V4="    listen 443 quic reuseport default_server;"; LISTEN_QUIC_V6="    listen [::]:443 quic reuseport default_server;"; else LISTEN_QUIC_V4=""; LISTEN_QUIC_V6=""; fi
   if [ "${SUPPORT_HTTP2}" = "yes" ]; then LISTEN_SSL_HTTP2_PARAM=" http2"; else LISTEN_SSL_HTTP2_PARAM=""; fi
   cat > /etc/nginx/sites-enabled/default << EOF
