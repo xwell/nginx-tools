@@ -29,44 +29,52 @@
 
 ## 安装使用
 
-### 1. 安装增强版 Nginx
+### 唯一脚本：`nginx-suite-merged.sh`
+
+仓库现在以 `nginx-suite-merged.sh` 作为唯一维护入口，它已经覆盖：
+- 增强版 Nginx 安装
+- Let's Encrypt/acme.sh 证书签发与安装
+- 普通站点反向代理
+- 哪吒面板 gRPC + WebSocket 反代
+- Cloudflare DNS 验证
+- Cloudflare 回源真实 IP
+- 旧域名配置与证书清理
+
+### 下载与运行
 
 ```bash
-# 下载并运行安装脚本
-wget https://raw.githubusercontent.com/xwell/nginx-tools/main/nginx-standalone-enhanced.sh
-chmod +x nginx-standalone-enhanced.sh
-sudo ./nginx-standalone-enhanced.sh
+wget https://raw.githubusercontent.com/xwell/nginx-tools/main/nginx-suite-merged.sh
+chmod +x nginx-suite-merged.sh
+sudo ./nginx-suite-merged.sh
 ```
 
-### 2. 申请 SSL 证书
+### 交互模式
 
-```bash
-# 下载并运行证书申请脚本
-wget https://raw.githubusercontent.com/xwell/nginx-tools/main/letsencrypt-standalone-enhanced.sh
-chmod +x letsencrypt-standalone-enhanced.sh
-sudo ./letsencrypt-standalone-enhanced.sh
-```
-
-### 3. 合集脚本：nginx-suite-merged.sh（推荐）
-
-提供菜单化管理与无交互模式，集成：
-- 仅安装 Nginx（增强配置）
-- 站点反向代理（签发/安装证书、生成站点、可选 Cloudflare Real-IP）
-- 哪吒面板反向代理（gRPC + WebSocket，直连后端）
-
-交互模式：
 ```bash
 sudo ./nginx-suite-merged.sh
 ```
 
-无交互模式（命令行参数或环境变量，二者等效，环境变量使用 SU_ 前缀）：
+主菜单包含：
+- 仅安装 Nginx
+- 普通站点反向代理
+- 哪吒面板反向代理
+- 清理旧域名配置
+- 在线更新脚本
+
+站点反代和哪吒反代在交互模式下都支持两种后端输入方式：
+- 直接输入完整后端 URL，例如 `http://127.0.0.1:8080` 或 `https://127.0.0.1:8443`
+- 留空后再输入 IP + 端口
+
+### 无交互模式
+
+支持命令行参数或环境变量，二者等效，环境变量使用 `SU_` 前缀。
 
 - 安装 Nginx
 ```bash
 sudo ./nginx-suite-merged.sh --action=install
 ```
 
-- 普通站点反代（后端 URL 直填）
+- 普通站点反代
 ```bash
 sudo ./nginx-suite-merged.sh \
   --action=site \
@@ -76,154 +84,73 @@ sudo ./nginx-suite-merged.sh \
   --cdn-realip
 ```
 
-- 普通站点反代（后端 IP + 端口）
+- 普通站点反代，使用 IP + 端口写法
 ```bash
 sudo ./nginx-suite-merged.sh \
   --action=site \
   --hostname=example.com \
-  --backend-ip=127.0.0.1 --backend-port=8080 \
-  --cf --cf-email=you@example.com --cf-api=YOUR_CF_APIKEY \
-  --cf-zone-exists=no --cf-zone=example.com \
+  --backend-ip=127.0.0.1 \
+  --backend-port=8080 \
+  --cf \
+  --cf-email=you@example.com \
+  --cf-api=YOUR_CF_APIKEY \
+  --cf-zone-exists=no \
+  --cf-zone=example.com \
   --cdn-realip
 ```
 
-- 哪吒面板反代（gRPC + WS）
+- 哪吒面板反代
 ```bash
 sudo ./nginx-suite-merged.sh \
   --action=nezha \
   --hostname=panel.example.com \
-  --backend-ip=127.0.0.1 --backend-port=9000 \
+  --backend=http://127.0.0.1:9000 \
   --no-cf \
   --cdn-realip
 ```
 
-- 清理旧域名配置（删除 server 块、证书与 acme.sh 自动续签）
+- 清理旧域名配置
 ```bash
 sudo ./nginx-suite-merged.sh \
   --action=cleanup \
   --hostname=old.example.com
 ```
 
-支持参数：
-- `--action`: install | site | nezha | cleanup
+### 参数说明
+
+- `--action`: `install | site | nezha | cleanup`
 - `--hostname`: 站点域名
-- `--backend`: 后端完整 URL（与 `--backend-ip/--backend-port` 二选一）
-- `--backend-ip` 与 `--backend-port`: 后端地址与端口
+- `--backend`: 后端完整 URL，支持 `http://` 或 `https://`
+- `--backend-ip` 与 `--backend-port`: 后端地址与端口，与 `--backend` 二选一
 - `--cf | --no-cf`: 是否使用 Cloudflare DNS 验证
 - `--cf-email` 与 `--cf-api`: Cloudflare 账户邮箱与 API Key
-- `--cf-zone-exists=yes|no`: 子域名 DNS 记录是否已存在（no 时需 `--cf-zone`）
-- `--cf-zone`: 主域名（Zone），仅当 `--cf-zone-exists=no` 时必填
-- `--cdn-realip | --no-cdn-realip`: 启用 Cloudflare 回源真实 IP
-- `--nezha | --no-nezha`: 是否生成哪吒路由（对 action=site 也可用）
+- `--cf-zone-exists=yes|no`: 子域名 DNS 记录是否已存在，`no` 时需同时提供 `--cf-zone`
+- `--cf-zone`: 主域名 Zone
+- `--cdn-realip | --no-cdn-realip`: 启用或关闭 Cloudflare 回源真实 IP
+- `--nezha | --no-nezha`: 是否生成哪吒路由，仅对 `--action=site` 额外生效
 
-对应的环境变量（全大写）：
+### 对应环境变量
+
 - `SU_ACTION, SU_HOSTNAME, SU_BACKEND, SU_BACKEND_IP, SU_BACKEND_PORT`
 - `SU_USE_CF, SU_CF_EMAIL, SU_CF_API, SU_CF_ZONE, SU_CF_ZONE_EXISTS`
 - `SU_ENABLE_CDN_REALIP, SU_ENABLE_NEZHA`
 
 ### 清理旧域名
 
-- **交互式**：运行 `sudo ./nginx-suite-merged.sh`，在主菜单选择 `4. 清理旧域名配置`，按提示输入需要移除的旧域名。
-- **无交互**：执行 `sudo ./nginx-suite-merged.sh --action=cleanup --hostname=old.example.com`（也可通过 `SU_ACTION=cleanup`、`SU_HOSTNAME` 环境变量传参）。
+- 交互式：运行 `sudo ./nginx-suite-merged.sh`，在主菜单选择 `4. 清理旧域名配置`
+- 无交互：运行 `sudo ./nginx-suite-merged.sh --action=cleanup --hostname=old.example.com`
 
-脚本会自动完成以下操作：
-1. 删除 `/etc/nginx/sites-enabled/<域名>` 与 `sites-available` 中对应的 server 配置。
-2. 清理 `/etc/nginx/ssl/<域名>/` 目录下的证书文件。
-3. 调用 `acme.sh --remove -d <域名>`，移除自动续签计划，避免以后续 renewal 报错。
-4. 若 Nginx 配置发生变更，自动执行 `nginx -t && systemctl reload nginx`，确保配置立即生效。
+脚本会自动：
+1. 删除 `/etc/nginx/sites-enabled/<域名>` 与 `sites-available` 中对应配置
+2. 删除 `/etc/nginx/ssl/<域名>/` 证书目录
+3. 调用 `acme.sh --remove -d <域名>` 清理自动续签条目
+4. 在配置发生变化时执行 `nginx -t && systemctl reload nginx`
 
-如仍需保留 Cloudflare 或其他 DNS 解析，请手动在提供商面板中更新；脚本不会修改 DNS 记录。
+### 仓库说明
 
-## 使用说明：letsencrypt-standalone-enhanced.sh
-
-脚本作用：一键申请证书并生成 Nginx 反代站点。支持 Cloudflare DNS 验证、可选的 Cloudflare 回源真实 IP 配置、哪吒面板 gRPC + WebSocket 路由。
-
-### 交互式运行
-```bash
-sudo ./letsencrypt-standalone-enhanced.sh
-```
-按提示输入：
-- 域名（必填）
-- 后端服务 URL（必填，如 http://127.0.0.1:8080）
-- 是否使用 Cloudflare（可选；使用则需输入 CF 邮箱/API 等）
-- 是否启用 Cloudflare 回源真实IP（可选）
-- 是否启用哪吒 gRPC+WebSocket（可选）
-
-完成后：
-- 证书安装于 `/etc/nginx/ssl/<域名>/`
-- 站点配置在 `/etc/nginx/sites-available/<域名>` 并已启用
-- 自动重载 Nginx
-
-### 无交互运行（命令行参数/环境变量）
-支持用参数或环境变量预置，命令行优先。
-
-- 核心参数
-  - `--hostname=域名` 或 `LE_HOSTNAME`
-  - `--backend=URL` 或 `LE_BACKEND`
-- Cloudflare 开关与凭据
-  - `--cf`/`--no-cf` 或 `USE_CF=yes|no`
-  - `--cf-email=EMAIL` 或 `LE_CF_EMAIL`
-  - `--cf-api=API_KEY` 或 `LE_CF_API`
-  - `--cf-zone=ZONE` 或 `LE_CF_ZONE`
-  - `--cf-zone-exists=yes|no` 或 `LE_CF_ZONEEXISTS=yes|no`
-- 可选功能开关
-  - `--cdn-realip`/`--no-cdn-realip` 或 `ENABLE_CDN_REALIP=yes|no`
-  - `--nezha`/`--no-nezha` 或 `ENABLE_NEZHA=yes|no`（同时启用 gRPC + WebSocket）
-
-示例（Cloudflare DNS 验证 + 开启回源与哪吒路由）
-```bash
-sudo ./letsencrypt-standalone-enhanced.sh \
-  --hostname=test.example.com \
-  --backend=http://127.0.0.1:9527 \
-  --cf \
-  --cf-email=you@example.com \
-  --cf-api=YOUR_CF_API_KEY \
-  --cf-zone=example.com \
-  --cf-zone-exists=yes \
-  --cdn-realip \
-  --nezha
-```
-
-示例（不使用 Cloudflare，用 standalone 模式）
-```bash
-sudo ./letsencrypt-standalone-enhanced.sh \
-  --hostname=test.example.com \
-  --backend=http://127.0.0.1:8080 \
-  --no-cf \
-  --cdn-realip \
-  --no-nezha
-```
-
-也可用环境变量（命令行省略时生效）
-```bash
-export LE_HOSTNAME=test.example.com
-export LE_BACKEND=http://127.0.0.1:8080
-export USE_CF=no
-export ENABLE_CDN_REALIP=yes
-export ENABLE_NEZHA=no
-sudo ./letsencrypt-standalone-enhanced.sh
-```
-
-### 生成内容说明
-- Nginx 站点：
-  - 80: HTTP 到 HTTPS 的 301 跳转
-  - 443: 自动根据支持启用 http2/http3（quic），并反代到提供的后端
-- 证书：
-  - key: `/etc/nginx/ssl/<域名>/key.pem`
-  - fullchain: `/etc/nginx/ssl/<域名>/fullchain.pem`
-  - chain: `/etc/nginx/ssl/<域名>/chain.pem`
-- Cloudflare 回源真实 IP（可选）：
-  - 生成并 include `snippets/cloudflare-realip.conf`
-  - 安装 systemd timer 每周自动更新 CF IP 段
-- 哪吒面板（可选）：
-  - gRPC: `location ^~ /proto.NezhaService/ { grpc_pass grpc://dashboard; ... }`
-  - WebSocket: `location ~* ^/api/v1/ws/(server|terminal|file)(.*)$ { ... }`
-
-### 注意事项
-- 选择 Cloudflare 模式时，脚本将验证 `LE_CF_EMAIL/LE_CF_API`，并可选自动添加 A 记录（需 `LE_CF_ZONE` 或 `--cf-zone`）。
-- standalone 模式会短暂停止 nginx（脚本自动处理）。
-- 若 80/443 端口被占用，签发可能失败，请先释放或使用 Cloudflare DNS 模式。
-- 站点监听不使用 reuseport，以避免与默认站点冲突。
+- 仓库现在只维护 `nginx-suite-merged.sh`
+- 安装、签证书、反代、哪吒面板和清理旧域名都通过这一份脚本完成
+- 后续新增功能和修复也只会进入这一份脚本
 
 
 ## 配置结构
@@ -297,20 +224,26 @@ location /login {
 
 ## 环境变量
 
-### Let's Encrypt 脚本环境变量
+### `nginx-suite-merged.sh` 环境变量
 
 ```bash
-# 域名
-export LE_HOSTNAME="example.com"
+# 动作
+export SU_ACTION="site"
 
-# 是否应用到默认配置
-export LE_DEFAULTCONF="no"
+# 站点与后端
+export SU_HOSTNAME="example.com"
+export SU_BACKEND="http://127.0.0.1:8080"
 
 # Cloudflare 配置
-export LE_CF_EMAIL="your-email@example.com"
-export LE_CF_API="your-api-key"
-export LE_CF_ZONE="example.com"
-export LE_CF_ZONEEXISTS="no"
+export SU_USE_CF="yes"
+export SU_CF_EMAIL="your-email@example.com"
+export SU_CF_API="your-api-key"
+export SU_CF_ZONE="example.com"
+export SU_CF_ZONE_EXISTS="yes"
+
+# 可选功能
+export SU_ENABLE_CDN_REALIP="yes"
+export SU_ENABLE_NEZHA="no"
 ```
 
 ## 性能调优

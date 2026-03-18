@@ -1,6 +1,6 @@
 #!/bin/bash
-# Nginx 安装与站点反代管理脚本（集合版）
-# 集成：nginx-standalone-enhanced.sh 与 letsencrypt-standalone-enhanced.sh（已内嵌）
+# Nginx 安装与站点反代管理脚本
+# 单文件维护版本
 
 set -e
 
@@ -21,6 +21,8 @@ have(){ command -v "$1" >/dev/null 2>&1; }
 
 # 轻量 spinner 与静默执行
 LOG_FILE="/var/log/nginx-standalone-enhanced.log"
+ACME_SH_HOME="/root/.acme.sh"
+ACME_SH_BIN="${ACME_SH_HOME}/acme.sh"
 SP_PID=""; SP_MSG=""
 init_log(){ mkdir -p /var/log; : > "$LOG_FILE"; }
 start_spinner(){ SP_MSG="$1"; { while true; do echo -ne "\r$SP_MSG ⏳   "; sleep 0.2; echo -ne "\r$SP_MSG ⏳.  "; sleep 0.2; echo -ne "\r$SP_MSG ⏳.. "; sleep 0.2; echo -ne "\r$SP_MSG ⏳..."; sleep 0.2; done; } & SP_PID=$!; }
@@ -549,8 +551,48 @@ validate_cloudflare_api(){ local email="$1"; local api_key="$2"; local response=
 
 add_cloudflare_record(){ local hostname="$1" ip="$2" email="$3" api_key="$4" zone="$5"; local zoneid=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones?name=$zone" -H "X-Auth-Email: $email" -H "X-Auth-Key: $api_key" -H "Content-Type: application/json" | grep -Po '(?<="id":")[^"]*' | head -1); if [ -z "$zoneid" ]; then log_error "无法找到域名 $zone 的 zone ID"; return 1; fi; local addrecord=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/$zoneid/dns_records" -H "X-Auth-Email: $email" -H "X-Auth-Key: $api_key" -H "Content-Type: application/json" --data "{\"id\":\"$zoneid\",\"type\":\"A\",\"name\":\"$hostname\",\"content\":\"$ip\",\"proxied\":true}"); if echo "$addrecord" | grep -q '"success":false'; then log_error "添加 DNS 记录失败:"; echo "$addrecord"; return 1; else log_success "DNS 记录已添加: $hostname -> $ip"; return 0; fi }
 
-install_acme(){ if [ ! -f /root/.acme.sh/acme.sh ]; then log_info "安装 acme.sh..."; curl https://get.acme.sh | sh; log_success "acme.sh 安装完成"; else log_info "acme.sh 已安装"; fi }
-set_default_ca(){ log_info "设置默认证书颁发机构为 Let's Encrypt..."; /root/.acme.sh/acme.sh --set-default-ca --server letsencrypt || { log_warn "无法设置默认 CA，尝试升级 acme.sh..."; /root/.acme.sh/acme.sh --upgrade || { log_error "无法升级 acme.sh"; exit 1; }; /root/.acme.sh/acme.sh --set-default-ca --server letsencrypt || { log_error "无法设置默认证书颁发机构"; exit 1; }; log_success "acme.sh 升级成功"; } }
+ensure_crontab_available(){
+  if command -v crontab >/dev/null 2>&1; then return 0; fi
+  log_info "安装 cron 以支持 acme.sh 自动续期..."
+  env DEBIAN_FRONTEND=noninteractive apt-get -qq update
+  env DEBIAN_FRONTEND=noninteractive apt-get -y -qq install cron
+  systemctl enable --now cron >/dev/null 2>&1 || log_warn "cron 已安装，但启动或设置开机自启失败，请手动检查"
+  if ! command -v crontab >/dev/null 2>&1; then
+    log_error "未找到 crontab 命令，无法继续安装 acme.sh"
+    exit 1
+  fi
+  log_success "cron 安装完成"
+}
+
+install_acme(){
+  if [ -x "$ACME_SH_BIN" ]; then
+    log_info "acme.sh 已安装"
+    return 0
+  fi
+  ensure_crontab_available
+  log_info "安装 acme.sh..."
+  curl -fsSL https://get.acme.sh | sh
+  if [ ! -x "$ACME_SH_BIN" ]; then
+    log_error "acme.sh 安装失败，未找到 ${ACME_SH_BIN}"
+    exit 1
+  fi
+  log_success "acme.sh 安装完成"
+}
+
+set_default_ca(){
+  if [ ! -x "$ACME_SH_BIN" ]; then
+    log_error "acme.sh 未正确安装，缺少 ${ACME_SH_BIN}"
+    exit 1
+  fi
+  log_info "设置默认证书颁发机构为 Let's Encrypt..."
+  if ! "$ACME_SH_BIN" --set-default-ca --server letsencrypt; then
+    log_warn "无法设置默认 CA，尝试升级 acme.sh..."
+    "$ACME_SH_BIN" --upgrade || { log_error "无法升级 acme.sh"; exit 1; }
+    "$ACME_SH_BIN" --set-default-ca --server letsencrypt || { log_error "无法设置默认证书颁发机构"; exit 1; }
+    log_success "acme.sh 升级成功"
+  fi
+  log_success "默认证书颁发机构已设置为 Let's Encrypt"
+}
 
 create_enhanced_site_config(){
   local hostname="$1" backend_url="$2" enable_cdn_realip="${3:-no}" enable_nezha_grpc="${4:-no}" enable_nezha_ws="${5:-no}"
@@ -676,31 +718,50 @@ EOF
   log_success "站点配置已创建: /etc/nginx/sites-available/${hostname}"
 }
 
-install_certificate(){ local hostname="$1" backend_url="$2"; log_info "安装证书..."; mkdir -p /etc/nginx/ssl/${hostname}; chmod 700 /etc/nginx/ssl; /root/.acme.sh/acme.sh --force --install-cert -d "$hostname" --key-file /etc/nginx/ssl/${hostname}/key.pem --fullchain-file /etc/nginx/ssl/${hostname}/fullchain.pem --ca-file /etc/nginx/ssl/${hostname}/chain.pem --reloadcmd "systemctl reload nginx"; create_enhanced_site_config "$hostname" "$backend_url"; log_success "证书安装完成"; }
+install_certificate(){ local hostname="$1" backend_url="$2"; log_info "安装证书..."; mkdir -p /etc/nginx/ssl/${hostname}; chmod 700 /etc/nginx/ssl; "$ACME_SH_BIN" --force --install-cert -d "$hostname" --key-file /etc/nginx/ssl/${hostname}/key.pem --fullchain-file /etc/nginx/ssl/${hostname}/fullchain.pem --ca-file /etc/nginx/ssl/${hostname}/chain.pem --reloadcmd "systemctl reload nginx"; create_enhanced_site_config "$hostname" "$backend_url"; log_success "证书安装完成"; }
 
 # -----------------------------
 # 高阶操作封装
 # -----------------------------
 ensure_base_installed(){ if ! have nginx; then log_warn "尚未安装 nginx，将先执行安装"; action_install_nginx; fi }
 
+prompt_backend_url(){
+  local service_name="$1" example_port="$2" result_var="$3"
+  local backend_url="" host="" port=""
+  read -p "请输入${service_name}完整URL(如 http://127.0.0.1:${example_port}，直接回车则改用IP+端口): " backend_url
+  if [ -z "$backend_url" ]; then
+    read -p "请输入${service_name}IP(如 127.0.0.1): " host
+    [ -z "$host" ] && { log_error "${service_name}IP不能为空"; return 1; }
+    read -p "请输入${service_name}端口(如 ${example_port}): " port
+    [ -z "$port" ] && { log_error "${service_name}端口不能为空"; return 1; }
+    backend_url="http://$host:$port"
+  fi
+  printf -v "$result_var" '%s' "$backend_url"
+}
+
 provision_site(){
   local hostname="$1" backend_url="$2" use_cf="$3" cf_email="$4" cf_api="$5" cf_zone="$6" cf_zone_exists="$7" enable_cdn_realip="$8" enable_nezha="$9"
   check_nginx
   local ip; ip=$(get_server_ip); log_info "服务器 IP: $ip"
   install_acme; set_default_ca; detect_nginx_features
-  systemctl stop nginx || true
   if [ "$use_cf" = "yes" ]; then
     if [[ $hostname =~ (\.cf$|\.ga$|\.gq$|\.ml$|\.tk$) ]]; then log_error "Cloudflare 不支持以下 TLD 的 API 调用: .cf, .ga, .gq, .ml, .tk"; exit 1; fi
     if [ -z "$cf_email" ] || [ -z "$cf_api" ]; then log_error "Cloudflare 邮箱/API Key 不能为空"; exit 1; fi
     if ! validate_cloudflare_api "$cf_email" "$cf_api"; then exit 1; fi
     export CF_Key="$cf_api"; export CF_Email="$cf_email"
     if [ "$cf_zone_exists" = "no" ] && [ -n "$cf_zone" ]; then add_cloudflare_record "$hostname" "$ip" "$cf_email" "$cf_api" "$cf_zone" || true; fi
-    log_info "申请证书 (Cloudflare DNS 模式)..."; /root/.acme.sh/acme.sh --force --issue --dns dns_cf -d "$hostname"
+    log_info "申请证书 (Cloudflare DNS 模式)..."; "$ACME_SH_BIN" --force --issue --dns dns_cf -d "$hostname"
   else
     if ! command -v socat >/dev/null 2>&1; then log_info "安装 socat..."; apt-get -qq update; apt-get -y -qq install socat; fi
-    log_info "申请证书 (standalone 模式)..."; /root/.acme.sh/acme.sh --force --issue --standalone -d "$hostname"
+    systemctl stop nginx || true
+    log_info "申请证书 (standalone 模式)..."
+    if ! "$ACME_SH_BIN" --force --issue --standalone -d "$hostname"; then
+      systemctl start nginx || true
+      log_error "证书申请失败"
+      exit 1
+    fi
+    systemctl start nginx || true
   fi
-  systemctl start nginx || true
 
   local ENABLE_NEZHA_GRPC="no" ENABLE_NEZHA_WS="no"
   if [ "$enable_cdn_realip" = "yes" ]; then ensure_cloudflare_realip_snippet; install_cloudflare_realip_updater; fi
@@ -745,14 +806,14 @@ cleanup_site(){
   fi
 
   local acme_removed="no"
-  if [ -x /root/.acme.sh/acme.sh ]; then
-    if [ -d "/root/.acme.sh/${hostname}" ] || [ -d "/root/.acme.sh/${hostname}_ecc" ]; then
-      if /root/.acme.sh/acme.sh --remove -d "$hostname" >>"$LOG_FILE" 2>&1; then
+  if [ -x "$ACME_SH_BIN" ]; then
+    if [ -d "${ACME_SH_HOME}/${hostname}" ] || [ -d "${ACME_SH_HOME}/${hostname}_ecc" ]; then
+      if "$ACME_SH_BIN" --remove -d "$hostname" >>"$LOG_FILE" 2>&1; then
         log_info "acme.sh 自动续签任务已删除"
         acme_removed="yes"
         removed_any="yes"
       else
-        log_warn "删除 acme.sh 条目失败，请手动检查 /root/.acme.sh/${hostname}"
+        log_warn "删除 acme.sh 条目失败，请手动检查 ${ACME_SH_HOME}/${hostname}"
       fi
     fi
   fi
@@ -783,11 +844,9 @@ action_install_nginx(){
 
 action_site_reverse_proxy(){
   ensure_base_installed
-  local hostname backend host port backend_url use_cf_ans use_cf="no" enable_cdn_realip_ans enable_cdn_realip="no"
+  local hostname backend_url use_cf_ans use_cf="no" enable_cdn_realip_ans enable_cdn_realip="no"
   read -p "请输入域名(必填): " hostname; [ -z "$hostname" ] && { log_error "域名不能为空"; return 1; }
-  read -p "请输入后端IP(如 127.0.0.1): " host; [ -z "$host" ] && { log_error "后端IP不能为空"; return 1; }
-  read -p "请输入后端端口(如 8080): " port; [ -z "$port" ] && { log_error "端口不能为空"; return 1; }
-  backend_url="http://$host:$port"
+  prompt_backend_url "后端服务" "8080" backend_url || return 1
   read -p "证书申请是否使用 Cloudflare DNS? [y/N]: " -r use_cf_ans; case "$use_cf_ans" in y|Y) use_cf="yes";; esac
   local cf_email cf_api cf_zone cf_zone_exists="yes"
   if [ "$use_cf" = "yes" ]; then
@@ -806,11 +865,9 @@ action_site_reverse_proxy(){
 
 action_nezha_reverse_proxy(){
   ensure_base_installed
-  local hostname backend host port backend_url use_cf_ans use_cf="no" enable_cdn_realip_ans enable_cdn_realip="no"
+  local hostname backend_url use_cf_ans use_cf="no" enable_cdn_realip_ans enable_cdn_realip="no"
   read -p "请输入域名(必填): " hostname; [ -z "$hostname" ] && { log_error "域名不能为空"; return 1; }
-  read -p "请输入哪吒面板后端IP(如 127.0.0.1): " host; [ -z "$host" ] && { log_error "后端IP不能为空"; return 1; }
-  read -p "请输入哪吒面板后端端口(如 9000): " port; [ -z "$port" ] && { log_error "端口不能为空"; return 1; }
-  backend_url="http://$host:$port"
+  prompt_backend_url "哪吒面板后端" "9000" backend_url || return 1
   read -p "证书申请是否使用 Cloudflare DNS? [y/N]: " -r use_cf_ans; case "$use_cf_ans" in y|Y) use_cf="yes";; esac
   local cf_email cf_api cf_zone cf_zone_exists="yes"
   if [ "$use_cf" = "yes" ]; then
@@ -836,11 +893,11 @@ action_cleanup_site(){
 }
 
 self_update(){
-  local url="https://raw.githubusercontent.com/xwell/nginx-tools/main/nginx-suite.sh"
+  local url="https://raw.githubusercontent.com/xwell/nginx-tools/main/nginx-suite-merged.sh"
   log_info "从 $url 获取最新脚本..."
-  if curl -fsSL "$url" -o /tmp/nginx-suite.sh.new; then
-    chmod +x /tmp/nginx-suite.sh.new
-    mv /tmp/nginx-suite.sh.new "$0"
+  if curl -fsSL "$url" -o /tmp/nginx-suite-merged.sh.new; then
+    chmod +x /tmp/nginx-suite-merged.sh.new
+    mv /tmp/nginx-suite-merged.sh.new "$0"
     log_success "更新成功。请重新运行脚本。"
     exit 0
   else
@@ -858,7 +915,7 @@ main_menu(){
 
   echo "1.  仅安装nginx"
 
-  echo "2.  站点反向代理-IP+端口"
+  echo "2.  站点反向代理"
 
   echo "3.  哪吒面板反向代理"
 
